@@ -1,0 +1,7 @@
+bin/
+obj/
+artifacts/
+*.pfx
+*.p12
+*.key
+.DS_Store
