@@ -80,9 +80,10 @@ public class Program
 
         byte[] originalPdfBytes = File.ReadAllBytes(SourcePdfPath);
 
+        byte[] sequential5Signed = null!;
         if (mode == "sequential" || mode == "all")
         {
-            ExecuteSigningSequence(originalPdfBytes, certManager, SequentialOrder, "sequential", "afmsf2_sequential_5signed.pdf");
+            sequential5Signed = ExecuteSigningSequence(originalPdfBytes, certManager, SequentialOrder, "sequential", "afmsf2_sequential_5signed.pdf");
         }
 
         if (mode == "reverse" || mode == "all")
@@ -95,23 +96,56 @@ public class Program
             ExecuteSigningSequence(originalPdfBytes, certManager, InterleavedOrder, "interleaved", "afmsf2_interleaved_5signed.pdf");
         }
 
-        // 3. Create a tampered copy to demonstrate tamper detection
-        Console.WriteLine("\n[3] Generating tampered test copy for tamper detection verification...");
+        // 3. Phase 3: Final Approval Workflow on the 5-specialist completed document
+        if (sequential5Signed != null)
+        {
+            Console.WriteLine("\n[3] Executing Final Approving Authority Workflow...");
+            Console.WriteLine(" -> Verifying 5 specialist signatures via independent pyHanko verification gate...");
+
+            var authCert = certManager.GetSigningCertificate(SigningRoleId.ApprovingAuthority);
+            byte[] complete6Signed = PdfSigningEngine.SignFinalApproval(
+                sequential5Signed,
+                authCert,
+                certsDir);
+
+            var completePath = Path.Combine(ArtifactsDir, "afmsf2_complete_6signed.pdf");
+            File.WriteAllBytes(completePath, complete6Signed);
+            Console.WriteLine($" -> Final Approval successfully applied with FieldMDP locking! Saved to {completePath} ({complete6Signed.Length} bytes)");
+
+            // Validate internal 6 signatures
+            var sixSigs = PdfSigningEngine.ValidateInternal(complete6Signed);
+            Console.WriteLine($" -> Total signatures in finalized document: {sixSigs.Count}");
+            foreach (var sig in sixSigs)
+            {
+                Console.WriteLine($"    * Field: {sig.FieldName,-26} | Valid: {sig.IsIntegrityValid,-5} | Locked: {sig.FieldLock?.Action}");
+            }
+
+            // 4. Create post-approval modification test artifact (modifying locked document)
+            Console.WriteLine("\n[4] Generating post-approval modified artifact to demonstrate locked document tamper detection...");
+            byte[] postModifiedBytes = (byte[])complete6Signed.Clone();
+            // Modify a byte in the document stream
+            postModifiedBytes[6000] ^= 0xFF;
+            var postModifiedPath = Path.Combine(ArtifactsDir, "afmsf2_complete_post_modified.pdf");
+            File.WriteAllBytes(postModifiedPath, postModifiedBytes);
+            Console.WriteLine($" -> Created post-approval modified file: {postModifiedPath}");
+        }
+
+        // 5. Create a specialist-tampered copy to demonstrate pre-approval rejection
+        Console.WriteLine("\n[5] Generating tampered specialist test copy...");
         var sampleSignedPdf = Path.Combine(ArtifactsDir, "afmsf2_sequential_5signed.pdf");
         if (File.Exists(sampleSignedPdf))
         {
             byte[] signedBytes = File.ReadAllBytes(sampleSignedPdf);
-            // Tamper with bytes inside the original document stream (offset 5000)
             signedBytes[5000] ^= 0xFF;
             var tamperedPdf = Path.Combine(ArtifactsDir, "afmsf2_sequential_tampered.pdf");
             File.WriteAllBytes(tamperedPdf, signedBytes);
-            Console.WriteLine($" -> Created tampered file: {tamperedPdf}");
+            Console.WriteLine($" -> Created tampered specialist file: {tamperedPdf}");
         }
 
-        Console.WriteLine("\nAll designated signing sequences and artifacts generated successfully.");
+        Console.WriteLine("\nAll designated signing sequences and Phase 3 approval artifacts generated successfully.");
     }
 
-    public static void ExecuteSigningSequence(
+    public static byte[] ExecuteSigningSequence(
         byte[] originalPdfBytes,
         IdentityCertificateManager certManager,
         IReadOnlyList<SigningRoleId> sequence,
@@ -121,7 +155,6 @@ public class Program
         Console.WriteLine($"\n--- Executing Signing Sequence: {sequenceName.ToUpperInvariant()} ---");
         Console.WriteLine($"Order: {string.Join(" -> ", sequence.Select(r => SigningIdentity.GetById(r).RoleTitle))}");
 
-        // Pre-create working copy with all 6 signature fields
         byte[] workingPdf = PdfSigningEngine.InitializeWorkingPdf(originalPdfBytes);
         int step = 1;
 
@@ -137,7 +170,6 @@ public class Program
                 identity.FieldName,
                 signingCert);
 
-            // Verify internal validation after each incremental signature
             var internalResults = PdfSigningEngine.ValidateInternal(workingPdf);
             Console.WriteLine($" -> Cumulative signatures in document: {internalResults.Count}");
             foreach (var sig in internalResults)
@@ -150,5 +182,6 @@ public class Program
         var outputPath = Path.Combine(ArtifactsDir, outputFileName);
         File.WriteAllBytes(outputPath, workingPdf);
         Console.WriteLine($"\nSuccessfully saved complete 5-specialist signed document to {outputPath} ({workingPdf.Length} bytes)");
+        return workingPdf;
     }
 }
